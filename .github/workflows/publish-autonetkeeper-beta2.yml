@@ -1,0 +1,59 @@
+name: Publish AutoNetKeeper beta2 downloadable DEB
+on:
+  push:
+    branches: ['downloads/autonetkeeper']
+    paths: ['.github/workflows/publish-autonetkeeper-beta2.yml']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary from user-authorized transfer URL
+        env:
+          PACKAGE_URL: "https://sdmntprcentralindia.oaiusercontent.com/files/00000000-7764-8208-8deb-272dbd67e61a/raw?se=2026-11-04T21%3A20%3A46Z&sp=r&sv=2026-02-06&sr=b&scid=060805b2-de4a-5023-b820-5b65a0395d5b&skoid=3cb6de21-012a-49c9-9402-a1ebf8d0bd06&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-04T04%3A00%3A23Z&ske=2026-11-05T04%3A00%3A23Z&sks=b&skv=2026-02-06&sig=/eHNVmyWkBzSSG1S/h9%2Bbqi4oVjiAfkTHbtt81B7ddE%3D"
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 "$PACKAGE_URL" -o package.zip
+          unzip -oq package.zip -d original
+          deb="$(find original -name '*.deb' -type f | head -1)"
+          test -n "$deb"
+          echo 'e8ceb97a1e4e007b1e96b47ddf0e2a4c5350aaf8c97241627505b645d765f3aa  '"$deb" | sha256sum -c -
+          mkdir -p extracted output
+          dpkg-deb -R "$deb" extracted
+          sed -i 's/^Version: 0.5.0~beta1$/Version: 0.5.0~beta2/' extracted/DEBIAN/control
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("extracted/DEBIAN/postinst")
+          t=p.read_text()
+          anchor='chmod 644 "$PLIST_REAL"'
+          assert anchor in t
+          extra='''chmod 644 "$PLIST_REAL"
+          PREF_REAL="$(jbroot /var/mobile/Library/Preferences/com.fzj.autonetkeeper.plist)"
+          PREF_PARENT="$(dirname "$PREF_REAL")"
+          if [ -f "$PREF_REAL" ] && id mobile >/dev/null 2>&1; then
+              chown mobile:mobile "$PREF_PARENT" "$PREF_REAL" 2>/dev/null || true
+              chmod 600 "$PREF_REAL" 2>/dev/null || true
+          fi'''
+          p.write_text(t.replace(anchor,extra,1))
+          PY
+          chmod 755 extracted/DEBIAN/postinst
+          sh -n extracted/DEBIAN/postinst
+          dpkg-deb --build --root-owner-group extracted output/com.fzj.autonetkeeper_0.5.0-beta2_iphoneos-arm64e.deb
+          deb=output/com.fzj.autonetkeeper_0.5.0-beta2_iphoneos-arm64e.deb
+          test "$(dpkg-deb -f "$deb" Package)" = "com.fzj.autonetkeeper"
+          test "$(dpkg-deb -f "$deb" Architecture)" = "iphoneos-arm64e"
+          test "$(dpkg-deb -f "$deb" Version)" = "0.5.0~beta2"
+          sha256sum "$deb"
+      - name: Publish direct public download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="autonetkeeper-v0.5.0-beta2-download"
+          deb="output/com.fzj.autonetkeeper_0.5.0-beta2_iphoneos-arm64e.deb"
+          gh release create "$tag" "$deb" --target "${{ github.sha }}" --title "AutoNetKeeper v0.5.0 beta2 RootHide Download" --notes "Binary-only public download mirror for the private AutoNetKeeper build. This beta2 fixes RootHide preferences file permissions only; the Settings button callback has not been recompiled."
+          echo "Public URL: https://github.com/$GH_REPO/releases/download/$tag/$(basename "$deb")"
